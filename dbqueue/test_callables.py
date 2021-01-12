@@ -21,3 +21,18 @@ class TestGetCallable(TestCase):
         self.assertEqual(
             models.Job.path_to_function("dbqueue.test_callables.test_func"), test_func
         )
+
+    def test_callable(self):
+        f = models.Job.path_to_function("dbqueue.test_callables.test_func")
+        result = f(1, a="b", c="d")
+
+        self.assertEqual(
+            result,
+            {
+                "args": (1,),
+                "kwargs": {
+                    "a": "b",
+                    "c": "d",
+                },
+            },
+        )
