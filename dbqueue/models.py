@@ -1,13 +1,80 @@
 """ Models for database queue """
 
 from datetime import timedelta
-
 import functools
 import importlib
+import json
+import traceback
+
+import logging
 
 from typing import Callable, List, Dict, Any
 
-from django.db import models
+from django.db import models, transaction
+from django.utils import timezone
+
+log = logging.getLogger(__name__)
+
+
+class Uncallable(Exception):
+    """ The underlying function was not callable """
+
+    def __init__(self, arg):
+        super().__init__()
+        self.arg = arg
+
+    def __str__(self):
+        return f"Object of type '{self.arg.__name__}'' is not callable"
+
+
+class PermanentFailure(Exception):
+    """ The job will never be completed """
+
+    def __init__(self, msg: str):
+        super().__init__()
+
+        self.msg = msg
+
+    def __str__(self):
+        return self.msg
+
+
+class Unfinished(Exception):
+    """ The job has not yet finished """
+
+
+class JobManager(models.Manager):
+    """ Manager for the job model """
+
+    def simple_enqueue_job(self, func, *args, **kwargs):
+        """ Enqueue a job for immediate execution with all default values """
+
+        # Make sure the function is callable
+        Job._callable_or_error(func)
+        func_path = Job.function_to_path(func)
+
+        with transaction.atomic():
+            job = Job()
+            job.func_name = func_path
+            job.save()
+
+            for i, arg in enumerate(args):
+                job_arg = JobArg()
+                job_arg.job = job
+                job_arg.position = i
+                job_arg.arg = arg
+
+                job_arg.save()
+
+            for key, value in kwargs.items():
+                job_kwarg = JobKWArg()
+                job_kwarg.job = job
+                job_kwarg.param_name = key
+                job_kwarg.arg = value
+
+                job_kwarg.save()
+
+        return job
 
 
 class Job(models.Model):
@@ -36,25 +103,20 @@ class Job(models.Model):
     # we will wait 30s, 1m, 2m, 4m, 8m between failures
     retry_multiplier = models.PositiveIntegerField(default=2)
 
+    objects = JobManager()
+
     def get_callable(self) -> Callable:
         """ Get a reference to the underlying callable """
 
-        # Example: a.b.c means the a.b module, c function of that module
-        parts = self.func_name.split(".")
-        module_name = parts.join(".")
-
-        module = importlib.import_module(module_name)
-        func = getattr(module, self.func_name)
-
-        Job._callable_or_error(func)
-
-        return func
+        return Job.path_to_function(self.func_name)
 
     def get_partial(self):
         """ Get a function to execute with args and kwargs baked in """
 
         return functools.partial(
             self.get_callable(),
+            *self.get_args(),
+            **self.get_kwargs(),
         )
 
     def get_args(self) -> List[Any]:
@@ -62,7 +124,7 @@ class Job(models.Model):
 
         out = []
 
-        for obj in self.args.all().order_by(position):
+        for obj in self.args.all().order_by("position"):
             assert isinstance(obj, JobArg)
 
             out.append(obj.arg)
@@ -80,6 +142,63 @@ class Job(models.Model):
             out[obj.param_name] = obj.arg
 
         return out
+
+    def execute(self):
+        """ Execute the job and record the status """
+
+        result = JobResult()
+        result.job = self
+        result.started_at = timezone.now()
+
+        try:
+            partial = self.get_partial()
+        except Uncallable as exc:
+            log.error("Unable to get partial callable for %s", self.func_name)
+
+            # If this thing can't be called, never retry
+            result.finished_at = timezone.now()
+            result.permanent = True
+            result.success = False
+            result.exception = str(exc)
+
+            # We aren't going to do a traceback here, because it would just lead to like 7 lines up
+            # The uncallable is a bit special cased in that regard
+            result.save()
+            return
+
+        # Attempt execution
+        try:
+            val = partial()
+
+            result.finished_at = timezone.now()
+            result.success = True
+            result.permanent = True
+            result.result = val
+            result.save()
+
+        except Exception as exc:
+            result.finished_at = timezone.now()
+            result.success = False
+            result.permanent = False
+            result.exception = str(exc)
+            result.traceback = "\n".join(traceback.format_tb(exc.__traceback__))
+            result.save()
+
+    def result(self):
+        """ Get the resultant value if available """
+
+        try:
+            permanent_result = self.results.get(permanent=True)
+        except JobResult.DoesNotExist:
+            # If we don't have a permanent result, throw back an unfinished
+            raise Unfinished()
+
+        assert isinstance(permanent_result, JobResult)
+
+        if not permanent_result.success:
+            raise PermanentFailure(permanent_result.exception)
+
+        return permanent_result.result
 
     @staticmethod
     def function_to_path(func: Callable) -> str:
@@ -108,7 +227,7 @@ class Job(models.Model):
     @staticmethod
     def _callable_or_error(f: Any) -> None:
         if not callable(f):
-            raise TypeError(f"'{func.__name__}' object is not callable")
+            raise Uncallable(func)
 
     def __str__(self):
         return self.func
@@ -142,13 +261,14 @@ class JobKWArg(models.Model):
 class JobResult(models.Model):
     """ The result of a run job """
 
-    job = models.ForeignKey(Job, on_delete=models.CASCADE)
+    job = models.ForeignKey(Job, on_delete=models.CASCADE, related_name="results")
     success = models.BooleanField()
     started_at = models.DateTimeField()
     finished_at = models.DateTimeField()
     exception = models.TextField()
     traceback = models.TextField()
     result = models.JSONField(null=True)
+    permanent = models.BooleanField()  # Indicates if we should keep trying or not
 
     def __str__(self):
         return f"{self.job}: {self.success and 'Success' or 'Failure'}"
