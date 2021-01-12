@@ -95,10 +95,11 @@ class Job(models.Model):
 
         # Example: a.b.c means the a.b module, c function of that module
         parts = path.split(".")
-        module_name = ".".join(parts)
+        module_name = ".".join(parts[0:-1])
+        func_name = parts[-1]
 
         module = importlib.import_module(module_name)
-        func = getattr(module, self.func_name)
+        func = getattr(module, func_name)
 
         Job._callable_or_error(func)
 
