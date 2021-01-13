@@ -9,10 +9,11 @@ import signal
 from django.core.management.base import BaseCommand, CommandError, CommandParser
 from django.conf import settings
 
-from ._async import NotificationThread
-from ._thread_helpers import WaitEvent
-from ._wakeup import Wakeup
-from ._jobs import JobRunner
+from dbqueue.runner.postgres_notifications import NotificationThread
+from dbqueue.runner.thread_helpers import WaitEvent
+from dbqueue.runner.wakeup import Wakeup
+from dbqueue.runner.jobs import JobRunner
+
 
 # Allow Postgres and PostGIS
 NOTIFY_ENGINES = (
