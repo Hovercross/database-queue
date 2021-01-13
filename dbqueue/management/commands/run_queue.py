@@ -12,6 +12,7 @@ from django.conf import settings
 from ._async import NotificationThread
 from ._thread_helpers import WaitEvent
 from ._wakeup import Wakeup
+from ._jobs import JobRunner
 
 # Allow Postgres and PostGIS
 NOTIFY_ENGINES = (
@@ -43,13 +44,21 @@ class Command(BaseCommand):
             help="Forced task queue rescan interval, in seconds",
         )
 
-    def handle(self, rescan_period, *args, **kwargs):
+        parser.add_argument(
+            "--job-runners", type=int, default=1, help="Number of job runners to have"
+        )
+
+    def handle(self, rescan_period: int, job_runners: int, *args, **kwargs):
+        if job_runners < 1:
+            raise CommandError("Must have at least one job runner")
+
         channel_name = self.get_channel_name()
         database_alias = self.get_database_alias()
 
         db_settings = settings.DATABASES[database_alias]
 
         run_event = Event()
+        run_event.set()  # Set it to start, since we want the runners to pop on startup
         exit_event = Event()
 
         def perform_exit(sig, frame):
@@ -116,6 +125,14 @@ class Command(BaseCommand):
             # Make sure that, if the wait thread ever crashes (how?
             # we throw the exit event
             WaitEvent(wakeup_thread, exit_event).start()
+
+        # Start the runners
+        for i in range(job_runners):
+            runner = JobRunner(run_event)
+            runner.start()
+
+            # Nobody should crash. If they do, begin the exit process
+            WaitEvent(runner, exit).start()
 
         # Now sleep until something triggers an exit
         log.info("Waiting for exit event")

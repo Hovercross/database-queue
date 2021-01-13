@@ -1,9 +1,11 @@
 """ Models for database queue """
 
+from __future__ import annotations
+
+
 from datetime import timedelta
 import functools
 import importlib
-import json
 import traceback
 
 import logging
@@ -12,6 +14,7 @@ from typing import Callable, List, Dict, Any
 
 from django.db import models, transaction
 from django.utils import timezone
+
 
 log = logging.getLogger(__name__)
 
@@ -92,6 +95,9 @@ class Job(models.Model):
     # Run the job in the future
     delay_until = models.DateTimeField(null=True)
 
+    # Delays due to errors
+    error_delay_until = models.DateTimeField(null=True)
+
     # How many times to retry the job
     max_retries = models.PositiveSmallIntegerField(default=0)
 
@@ -161,8 +167,10 @@ class Job(models.Model):
             result.success = False
             result.exception = str(exc)
 
-            # We aren't going to do a traceback here, because it would just lead to like 7 lines up
+            # We aren't going to do a traceback here,
+            # because it would just lead to like 7 lines up
             # The uncallable is a bit special cased in that regard
+
             result.save()
             return
 
@@ -177,12 +185,28 @@ class Job(models.Model):
             result.save()
 
         except Exception as exc:
+            # Delay my own re-execution until the appropriate time
+            total_try_count = self.results.count()
+
+            # Set the internal delay for easy querying
+            self.error_delay_until = (
+                timezone.now()
+                + self.base_retry_delay * self.retry_multiplier * total_try_count
+            )
+
             result.finished_at = timezone.now()
             result.success = False
             result.permanent = False
             result.exception = str(exc)
             result.traceback = "\n".join(traceback.format_tb(exc.__traceback__))
+
+            # If we've run out of retries, override permanent to true
+            if total_try_count >= self.max_retries:
+                result.permanent = True
+
             result.save()
+
+            self.save()
 
     def result(self):
         """ Get the resultant value if available """
@@ -227,7 +251,7 @@ class Job(models.Model):
     @staticmethod
     def _callable_or_error(f: Any) -> None:
         if not callable(f):
-            raise Uncallable(func)
+            raise Uncallable(f)
 
     def __str__(self):
         return self.func
