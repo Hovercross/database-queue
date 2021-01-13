@@ -1,4 +1,4 @@
-""" Class that handles running jobs """
+""" Postgres async handler """
 
 from threading import Thread, Event
 from logging import getLogger
@@ -18,14 +18,14 @@ class NotificationThread(Thread):
     # because we don't want the underlying connections to be closed or managed.
     # Communication between this and the task runner will be done via an event
 
-    def __init__(self, conn_args: dict, channel_name: str, event: Event):
+    def __init__(self, conn_args: dict, channel_name: str, run_event: Event):
         self._conn_args = conn_args
         self.channel_name = channel_name
-        self.event = event
+        self.run_event = run_event
         self.exiting = False
         self.pipe = os.pipe()  # Trigger the select when we're done
 
-        super().__init__()
+        super().__init__(name="Postgres async notifications")
 
     def run(self):
         log.info("Connecting to database")
@@ -35,8 +35,10 @@ class NotificationThread(Thread):
         log.debug("Getting cursor")
         cur = conn.cursor()
         log.debug("Got cursor")
-        cur.execute("LISTEN test")
-        # cur.execute("LISTEN '%s'", (self.channel_name,))
+
+        # TODO: I want to parameterize this, but it seems to throw a syntax error
+        cur.execute(f"LISTEN {self.channel_name};")
+
         log.debug("Executing listen")
 
         while not self.exiting and not conn.closed:
@@ -55,15 +57,17 @@ class NotificationThread(Thread):
 
                 if not self.exiting:
                     log.debug("setting event")
-                    self.event.set()
+                    self.run_event.set()
                     log.debug("event set")
 
         # Clean up after ourselves
-        log.debug("Exiting")
+        log.debug("Exiting notification thread")
         if not conn.closed:
             log.debug("Closing database connection")
             conn.close()
             log.info("Database connection closed")
+
+        log.info("notifiction thread finished")
 
     def stop(self):
         self.exiting = True

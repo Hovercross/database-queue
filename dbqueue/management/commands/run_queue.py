@@ -1,14 +1,20 @@
 """ Long-running async task runner """
 
-from threading import Event
+import logging
+from datetime import timedelta
+from threading import Event, Thread
+from typing import List, Callable
+import signal
 
 from django.core.management.base import BaseCommand, CommandError, CommandParser
 from django.conf import settings
 
-from dbqueue.runner import NotificationThread
+from ._async import NotificationThread
+from ._thread_helpers import WaitEvent
+from ._wakeup import Wakeup
 
 # Allow Postgres and PostGIS
-ALLOWED_ENGINES = (
+NOTIFY_ENGINES = (
     "django.contrib.gis.db.backends.postgis",
     "django.db.backends.postgresql",
 )
@@ -23,6 +29,8 @@ SETTINGS_MAP = {
     "port": "PORT",
 }
 
+log = logging.getLogger(__name__)
+
 
 class Command(BaseCommand):
     help = "Runs the async task runner"
@@ -35,40 +43,96 @@ class Command(BaseCommand):
             help="Forced task queue rescan interval, in seconds",
         )
 
-    def handle(self, *args, **kwargs):
+    def handle(self, rescan_period, *args, **kwargs):
         channel_name = self.get_channel_name()
         database_alias = self.get_database_alias()
 
         db_settings = settings.DATABASES[database_alias]
 
-        event = Event()
+        run_event = Event()
+        exit_event = Event()
+
+        def perform_exit(sig, frame):
+            log.info("Caught exit signal")
+            exit_event.set()
+
+        signal.signal(signal.SIGINT, perform_exit)
 
         engine = db_settings["ENGINE"]
-        if engine not in ALLOWED_ENGINES:
+        log.debug("Database engine is %s", engine)
+
+        execute_async = False
+        if engine in NOTIFY_ENGINES:
+            execute_async = True
+
+        if not execute_async and not rescan_period:
             raise CommandError(
-                "Async task queue only supports the "
-                "PostgreSQL and PostGIS database engines"
+                "Either async notifications or a rescan period must be enabled"
             )
 
-        conn_args = {}
+        if execute_async:
+            log.info("Async notifications will be enabled")
+        else:
+            log.info("Async notifications are not being executed")
 
-        # Copy the arguments to psycopg2, but leave the psycopg2 defaults
-        # if the Django setting isn't set
-        for psycopg2_key, django_key in SETTINGS_MAP.items():
-            if db_settings.get(django_key):
-                conn_args[psycopg2_key] = db_settings[django_key]
+        if rescan_period:
+            log.info("Rescan period is %d", rescan_period)
+        else:
+            log.warning("Periodic rescan is not enabled")
 
-        notification_thread = NotificationThread(
-            channel_name=channel_name, conn_args=conn_args, event=event
-        )
+        stop_commands: List[Callable] = []
+        waiting_threads: List[Thread] = []
 
-        notification_thread.start()
+        if execute_async:
+            conn_args = {}
 
-        try:
-            notification_thread.join()
-        except KeyboardInterrupt:
-            notification_thread.stop()
-            notification_thread.join()
+            # Copy the arguments to psycopg2, but leave the psycopg2 defaults
+            # if the Django setting isn't set
+            for psycopg2_key, django_key in SETTINGS_MAP.items():
+                if db_settings.get(django_key):
+                    conn_args[psycopg2_key] = db_settings[django_key]
+
+            notification_thread = NotificationThread(
+                channel_name=channel_name, conn_args=conn_args, run_event=run_event
+            )
+
+            notification_thread.start()
+
+            # Wait in an external thread to fire exit
+            # if the underlying notification thread exits
+            wait_thread = WaitEvent(notification_thread, exit_event)
+            wait_thread.start()
+
+            # Register that this is a thread we want to wait on
+            waiting_threads.append(notification_thread)
+
+            # Register this thread as one we want to stop
+            stop_commands.append(notification_thread.stop)
+
+        if rescan_period:
+            wakeup_thread = Wakeup(run_event, timedelta(seconds=rescan_period))
+            wakeup_thread.start()
+
+            # Make sure that, if the wait thread ever crashes (how?
+            # we throw the exit event
+            WaitEvent(wakeup_thread, exit_event).start()
+
+        # Now sleep until something triggers an exit
+        log.info("Waiting for exit event")
+        exit_event.wait()
+        log.info("Beginning exit routine")
+
+        # Fire all the stop methods
+        for func in stop_commands:
+            log.debug("firing stop command: %s", func)
+            func()
+
+        log.debug("all exit functions fired")
+        # Wait for all background threads to exit
+        for thread in waiting_threads:
+            thread.join()
+
+        log.info("Exiting async runner")
 
     def get_channel_name(self):
         try:
