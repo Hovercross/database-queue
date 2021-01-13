@@ -109,6 +109,8 @@ class Job(models.Model):
     # we will wait 30s, 1m, 2m, 4m, 8m between failures
     retry_multiplier = models.PositiveIntegerField(default=2)
 
+    finished = models.BooleanField(default=False)
+
     objects = JobManager()
 
     def get_callable(self) -> Callable:
@@ -163,9 +165,13 @@ class Job(models.Model):
 
             # If this thing can't be called, never retry
             result.finished_at = timezone.now()
+
             result.permanent = True
             result.success = False
             result.exception = str(exc)
+
+            self.finished = True
+            self.save()
 
             # We aren't going to do a traceback here,
             # because it would just lead to like 7 lines up
@@ -183,6 +189,9 @@ class Job(models.Model):
             result.permanent = True
             result.result = val
             result.save()
+
+            self.finished = True
+            self.save()
 
         except Exception as exc:
             # Delay my own re-execution until the appropriate time
@@ -208,7 +217,7 @@ class Job(models.Model):
 
             self.save()
 
-    def result(self):
+    def get_result(self):
         """ Get the resultant value if available """
 
         try:

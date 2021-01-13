@@ -1,12 +1,12 @@
 """ Module for running the various jobs """
 
-from datetime import timezone
 from threading import Thread, Event
 from typing import Union
 import logging
 
-from django.db import transaction
+from django.db import transaction, connections
 from django.db.models.query_utils import Q
+from django.utils import timezone
 
 from dbqueue import models
 
@@ -14,11 +14,12 @@ log = logging.getLogger(__name__)
 
 
 class JobRunner(Thread):
-    def __init__(self, run_event: Event):
+    def __init__(self, run_event: Event, name="Async job runner"):
         self.run_event = run_event
         self.exiting = False
+        self.idle = Event()
 
-        super().__init__(name="Async job runner")
+        super().__init__(name=name)
 
     def run(self):
         # See if we can get any jobs
@@ -28,7 +29,14 @@ class JobRunner(Thread):
             self.run_event.wait()
             log.debug("got run event")
 
+            self.idle.clear()
+
             while not self.exiting:
+                # Mirroring the Django database handling set up in django.db
+                for conn in connections.all():
+                    conn.queries_log.clear()
+                    conn.close_if_unusable_or_obsolete()
+
                 # Run until we don't have a job to run
                 with transaction.atomic():
                     job = self._get_job()
@@ -46,7 +54,33 @@ class JobRunner(Thread):
                 # clear the event so everyone stops
                 self.run_event.clear()
 
+                # Mirror django.db - this is normally done in a singal handler
+                # at the end of every job
+                for conn in connections.all():
+                    conn.queries_log.clear()
+                    conn.close_if_unusable_or_obsolete()
+
+            # This is mainly for testing, so I can catch these
+            self.idle.set()
+
+        log.debug("exiting run loop")
+
+        # Grab all my connections and close them.
+        # This may interfere with the Django connection handling, but this should
+        # be run from a management command, and not from the request runner itself
+        for conn in connections.all():
+            conn.close()
+
+    def stop(self):
+        """ Flag ourself for stop """
+
+        self.exiting = True
+        # Flag the event so that we don't get stuck
+        self.run_event.set()
+
     def _get_job(self) -> Union[models.Job, None]:
+        log.debug("finding jobs")
+
         # Jobs that are eligible to run
         time_query = Q(delay_until=None) | Q(delay_until__lte=timezone.now())
 
@@ -55,7 +89,7 @@ class JobRunner(Thread):
         )
 
         # Items without a permant result
-        unfinished = Q(results__permanent=False) | Q(results__isnull=True)
+        unfinished = Q(finished=False)
 
         available_jobs = time_query & error_time_query & unfinished
 
