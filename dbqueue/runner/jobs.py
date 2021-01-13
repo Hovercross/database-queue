@@ -82,14 +82,14 @@ class JobRunner(Thread):
         log.debug("finding jobs")
 
         # Jobs that are eligible to run
-        time_query = Q(delay_until=None) | Q(delay_until__lte=timezone.now())
+        time_query = Q(delay_until__isnull=True) | Q(delay_until__lte=timezone.now())
 
-        error_time_query = Q(error_delay_until=None) | Q(
+        error_time_query = Q(error_delay_until__isnull=True) | Q(
             error_delay_until__lte=timezone.now()
         )
 
         # Items without a permant result
-        unfinished = Q(finished=False)
+        unfinished = Q(final_result__isnull=True)
 
         available_jobs = time_query & error_time_query & unfinished
 

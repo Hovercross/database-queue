@@ -102,7 +102,8 @@ class TestJobRunner(TransactionTestCase):
         run_event.set()
 
         # Wait for the runner's idle to flag, which means
-        # that it has gone through at least one loop and determined there are no more jobs
+        # that it has gone through at least one
+        # loop and determined there are no more jobs
 
         runner.idle.wait()
         runner.stop()
@@ -110,6 +111,7 @@ class TestJobRunner(TransactionTestCase):
         # Wait for the runner to finish
         runner.join()
 
+        self.job.refresh_from_db()
         result = self.job.get_result()
 
         self.assertEqual(
@@ -158,6 +160,8 @@ class TestMultipleJobRunnerMultipleJobs(TransactionTestCase):
             assert isinstance(job, models.Job)
 
             # job 0 should have an arg of 0, 1 an arg of 1, etc
+
+            job.refresh_from_db()
 
             result = job.get_result()
             self.assertEqual(result, {"args": [i], "kwargs": {}})
