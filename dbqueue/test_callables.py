@@ -68,7 +68,7 @@ class TestSuccessfulExecution(TestCase):
     def setUp(self):
         self.job = models.Job.objects.simple_enqueue_job(test_func, 1, a="b", c="d")
 
-    def test_enqueue_callable(self):
+    def test_execute(self):
         self.job.execute()  # This will also save the results
 
         result = self.job.result()
