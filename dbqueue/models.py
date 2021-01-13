@@ -102,14 +102,11 @@ class Job(models.Model):
     max_retries = models.PositiveSmallIntegerField(default=0)
 
     # Base time to delay retries for
-    base_retry_delay = models.DurationField(default=timedelta(seconds=1))
+    retry_delay = models.DurationField(default=timedelta(seconds=1))
 
-    # What factor to scale the retries for after failure
-    # For example, if the base_retry_delay is 30s and the scale factor is 2,
-    # we will wait 30s, 1m, 2m, 4m, 8m between failures
-    retry_multiplier = models.PositiveIntegerField(default=2)
-
-    finished = models.BooleanField(default=False)
+    final_result = models.ForeignKey(
+        "JobResult", on_delete=models.DO_NOTHING, related_name="+", null=True
+    )
 
     objects = JobManager()
 
@@ -158,80 +155,87 @@ class Job(models.Model):
         result.job = self
         result.started_at = timezone.now()
 
+        # Get the partial. If we can't get it, immediately fail out and stop retries
         try:
             partial = self.get_partial()
         except Uncallable as exc:
             log.error("Unable to get partial callable for %s", self.func_name)
 
-            # If this thing can't be called, never retry
-            result.finished_at = timezone.now()
+            # If this thing can't be called, never retry,
+            # and don't bother with a traceback - it'll just point to here and
+            # not anything useful
 
-            result.permanent = True
+            result.finished_at = timezone.now()
             result.success = False
             result.exception = str(exc)
+            result.save()
 
-            self.finished = True
+            # This is the permanent result
+            self.final_result = result
             self.save()
 
-            # We aren't going to do a traceback here,
-            # because it would just lead to like 7 lines up
-            # The uncallable is a bit special cased in that regard
-
-            result.save()
             return
 
-        # Attempt execution
+        # We have a partial - attempt execution
         try:
             val = partial()
 
+            # If we made it to here, we got success
             result.finished_at = timezone.now()
             result.success = True
-            result.permanent = True
             result.result = val
             result.save()
 
-            self.finished = True
+            self.final_result = result
             self.save()
 
         except Exception as exc:
-            # Delay my own re-execution until the appropriate time
-            total_try_count = self.results.count()
-
-            # Set the internal delay for easy querying
-            self.error_delay_until = (
-                timezone.now()
-                + self.base_retry_delay * self.retry_multiplier * total_try_count
-            )
-
+            # No matter what, record the execution results
             result.finished_at = timezone.now()
             result.success = False
-            result.permanent = False
             result.exception = str(exc)
             result.traceback = "\n".join(traceback.format_tb(exc.__traceback__))
-
-            # If we've run out of retries, override permanent to true
-            if total_try_count >= self.max_retries:
-                result.permanent = True
-
             result.save()
 
+            attempt_count = self.results.count()
+
+            # If we have already hit retries,
+            # indicate this is the final result and bail
+            if attempt_count > self.max_retries:
+                self.final_result = result
+                self.save()
+
+                return
+
+            # We haven't hit max retries yet - schedule the next one out
+            delay = self.retry_delay ** attempt_count
+            self.error_delay_until = timezone.now() + delay
             self.save()
 
     def get_result(self):
         """ Get the resultant value if available """
 
-        try:
-            permanent_result = self.results.get(permanent=True)
-        except JobResult.DoesNotExist:
-            # If we don't have a permanent result, throw back an unfinished
+        if not self.final_result:
             raise Unfinished()
 
-        assert isinstance(permanent_result, JobResult)
+        assert isinstance(self.final_result, JobResult)
 
-        if not permanent_result.success:
-            raise PermanentFailure(permanent_result.exception)
+        if not self.final_result.success:
+            raise PermanentFailure(self.final_result.exception)
 
-        return permanent_result.result
+        return self.final_result.result
+
+    @property
+    def should_retry(self):
+        """ Determine if we can now execute """
+
+        if self.final_result:
+            return False
+
+        if self.results.count() >= self.max_retries:
+            return False
+
+        return True
 
     @staticmethod
     def function_to_path(func: Callable) -> str:
@@ -301,7 +305,6 @@ class JobResult(models.Model):
     exception = models.TextField()
     traceback = models.TextField()
     result = models.JSONField(null=True)
-    permanent = models.BooleanField()  # Indicates if we should keep trying or not
 
     def __str__(self):
         return f"{self.job}: {self.success and 'Success' or 'Failure'}"
