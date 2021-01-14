@@ -1,3 +1,12 @@
+""" Admin helpers for database queue """
+
 from django.contrib import admin
 
-# Register your models here.
+from . import models
+
+
+@admin.register(models.Job)
+class JobAdmin(admin.ModelAdmin):
+    """ Job admin """
+
+    list_filter = ["final_result__success"]

@@ -108,6 +108,8 @@ class Job(models.Model):
         "JobResult", on_delete=models.DO_NOTHING, related_name="+", null=True
     )
 
+    canceled = models.BooleanField(default=False)
+
     objects = JobManager()
 
     def get_callable(self) -> Callable:

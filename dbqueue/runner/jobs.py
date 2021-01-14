@@ -81,6 +81,8 @@ class JobRunner(Thread):
     def _get_job(self) -> Union[models.Job, None]:
         log.debug("finding jobs")
 
+        base = Q(final_result__isnull=True) & Q(canceled=False)
+
         # Jobs that are eligible to run
         time_query = Q(delay_until__isnull=True) | Q(delay_until__lte=timezone.now())
 
@@ -88,10 +90,7 @@ class JobRunner(Thread):
             error_delay_until__lte=timezone.now()
         )
 
-        # Items without a permant result
-        unfinished = Q(final_result__isnull=True)
-
-        available_jobs = time_query & error_time_query & unfinished
+        available_jobs = base & time_query & error_time_query
 
         return (
             models.Job.objects.filter(available_jobs)
