@@ -133,6 +133,8 @@ class Command(BaseCommand):
             runner = JobRunner(run_event)
             runner.start()
 
+            stop_commands.append(runner.stop)
+
             # Nobody should crash. If they do, begin the exit process
             WaitEvent(runner, exit).start()
 
