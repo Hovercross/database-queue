@@ -34,9 +34,23 @@ class JobFinishedFilter(admin.SimpleListFilter):
         return queryset
 
 
+class JobArgInline(admin.TabularInline):
+    model = models.JobArg
+
+
+class JobKWArgInline(admin.TabularInline):
+    model = models.JobKWArg
+
+
+class JobResultInline(admin.StackedInline):
+    model = models.JobResult
+
+
 @admin.register(models.Job)
 class JobAdmin(admin.ModelAdmin):
     """ Job admin """
+
+    inlines = [JobArgInline, JobKWArgInline, JobResultInline]
 
     list_filter = [JobFinishedFilter]
     list_display = ["id", "__str__", "queued_at", "priority", "finished"]
@@ -51,3 +65,9 @@ class JobAdmin(admin.ModelAdmin):
 
     def get_queryset(self, request: HttpRequest) -> QuerySet:
         return super().get_queryset(request).select_related("final_result")
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
