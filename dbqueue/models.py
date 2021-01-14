@@ -30,6 +30,17 @@ class Uncallable(Exception):
         return f"Object of type '{self.arg.__name__}'' is not callable"
 
 
+class Unfindable(Exception):
+    """ The underlying path could not be found """
+
+    def __init__(self, function_path):
+        super().__init__()
+        self.function_path = function_path
+
+    def __str__(self):
+        return f"Could not find object at {self.function_path}"
+
+
 class PermanentFailure(Exception):
     """ The job will never be completed """
 
@@ -179,7 +190,7 @@ class Job(models.Model):
         # Get the partial. If we can't get it, immediately fail out and stop retries
         try:
             partial = self.get_partial()
-        except Uncallable as exc:
+        except (Uncallable, Unfindable) as exc:
             log.error("Unable to get partial callable for %s", self.func_name)
 
             # If this thing can't be called, never retry,
@@ -276,7 +287,10 @@ class Job(models.Model):
         func_name = parts[-1]
 
         module = importlib.import_module(module_name)
-        func = getattr(module, func_name)
+        try:
+            func = getattr(module, func_name)
+        except AttributeError:
+            raise Unfindable(path)
 
         Job._callable_or_error(func)
 
