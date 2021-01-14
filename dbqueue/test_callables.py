@@ -49,6 +49,9 @@ class TestEnqueueCallable(TestCase):
     def setUp(self):
         self.job = models.Job.objects.simple_enqueue_job(test_func, 1, a="b", c="d")
 
+    def test_name(self):
+        self.assertEqual(str(self.job), "dbqueue.test_callables.test_func")
+
     def test_enqueue_callable(self):
         job = models.Job.objects.get(pk=self.job.pk)
         assert isinstance(job, models.Job)

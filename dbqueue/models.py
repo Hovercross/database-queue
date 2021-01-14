@@ -269,7 +269,7 @@ class Job(models.Model):
             raise Uncallable(f)
 
     def __str__(self):
-        return self.func
+        return self.func_name
 
 
 class JobArg(models.Model):
