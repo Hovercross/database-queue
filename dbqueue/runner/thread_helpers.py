@@ -22,12 +22,12 @@ class EventProxy(Thread):
 class WaitEvent(Thread):
     """ Thread that can wait for another thread to finish, then set an event """
 
-    def __init__(self, listen: Thread, set: Event):
-        self.listen = listen
-        self.set = set
+    def __init__(self, listen_thread: Thread, on_join: Event):
+        self.listen = listen_thread
+        self.on_join = on_join
 
         super().__init__(daemon=True, name="Thread waiter")
 
     def run(self):
         self.listen.join()
-        self.set.set()
+        self.on_join.set()
