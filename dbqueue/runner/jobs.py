@@ -45,6 +45,8 @@ class JobRunner(Thread):
                         log.info("executing job %d", job.id)
                         job.execute()
                     else:
+                        log.debug("breaking inner run loop")
+
                         # Pull out of the while loop,
                         # since there are no more jobs to run
                         break
