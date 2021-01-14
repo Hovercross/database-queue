@@ -1,5 +1,6 @@
 """ Multiple event proxy """
 
+from typing import List
 from threading import Thread, Event
 
 
@@ -17,6 +18,22 @@ class EventProxy(Thread):
     def run(self):
         self.listen.wait()
         self.set.set()
+
+
+class MultiEventWaiter(Thread):
+    """ Wait for multiple events, and then set an event when they are all finished """
+
+    def __init__(self, wait_events: List[Event], on_finished: Event):
+        self.wait_events = wait_events
+        self.on_finished = on_finished
+
+        super().__init__(daemon=True)
+
+    def run(self):
+        for event in self.wait_events:
+            event.wait()
+
+        self.on_finished.set()
 
 
 class WaitEvent(Thread):

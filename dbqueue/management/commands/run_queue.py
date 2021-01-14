@@ -10,7 +10,7 @@ from django.core.management.base import BaseCommand, CommandError, CommandParser
 from django.conf import settings
 
 from dbqueue.runner.postgres_notifications import NotificationThread
-from dbqueue.runner.thread_helpers import WaitEvent
+from dbqueue.runner.thread_helpers import WaitEvent, MultiEventWaiter
 from dbqueue.runner.wakeup import Wakeup
 from dbqueue.runner.jobs import JobRunner
 
@@ -50,7 +50,15 @@ class Command(BaseCommand):
             "--job-runners", type=int, default=1, help="Number of job runners to have"
         )
 
-    def handle(self, rescan_period: int, job_runners: int, *args, **kwargs):
+        parser.add_argument(
+            "--exit-on-idle",
+            action="store_true",
+            default=False,
+        )
+
+    def handle(
+        self, rescan_period: int, job_runners: int, exit_on_idle: bool, *args, **kwargs
+    ):
         if job_runners < 1:
             raise CommandError("Must have at least one job runner")
 
@@ -128,6 +136,9 @@ class Command(BaseCommand):
             # we throw the exit event
             WaitEvent(wakeup_thread, exit_event).start()
 
+        # If we're stopping on idle, we track the idle events here
+        idle_waiters: List[Event] = []
+
         # Start the runners
         for i in range(job_runners):
             runner = JobRunner(run_event)
@@ -135,8 +146,14 @@ class Command(BaseCommand):
 
             stop_commands.append(runner.stop)
 
+            if exit_on_idle:
+                idle_waiters.append(runner.idle)
+
             # Nobody should crash. If they do, begin the exit process
             WaitEvent(runner, exit_event).start()
+
+        if idle_waiters:
+            MultiEventWaiter(idle_waiters, exit_event).start()
 
         # Now sleep until something triggers an exit
         log.info("Waiting for exit event")
