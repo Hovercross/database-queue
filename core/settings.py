@@ -11,6 +11,9 @@ https://docs.djangoproject.com/en/3.1/ref/settings/
 """
 
 from pathlib import Path
+import os
+
+import dj_database_url
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -19,8 +22,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/3.1/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = "vz6l@xf-4qcou$al$$3k&#&ipr-8()xhv%+s5w#cx^96jspc#!"
+SECRET_KEY = os.environ.get("SECRET_KEY")
+DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///:memory:")
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
@@ -74,14 +77,7 @@ WSGI_APPLICATION = "core.wsgi.application"
 # Database
 # https://docs.djangoproject.com/en/3.1/ref/settings/#databases
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": "notification_test",
-        "USER": "notification_test",
-        "PASSWORD": "alsifyuehrfuherifeurgfaerg",
-    }
-}
+DATABASES = {"default": dj_database_url.parse(DATABASE_URL)}
 
 
 # Password validation
@@ -139,10 +135,6 @@ LOGGING = {
         "verbose": {
             "format": "{levelname} {asctime} {module} {process:d} {thread:d} {message}",
             "style": "{",
-        },
-        "simple": {
-            "format": "{levelname} {message}",
-            "style": "{",
-        },
+        }
     },
 }
