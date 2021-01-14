@@ -136,7 +136,7 @@ class Command(BaseCommand):
             stop_commands.append(runner.stop)
 
             # Nobody should crash. If they do, begin the exit process
-            WaitEvent(runner, exit).start()
+            WaitEvent(runner, exit_event).start()
 
         # Now sleep until something triggers an exit
         log.info("Waiting for exit event")
