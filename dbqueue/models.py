@@ -12,9 +12,9 @@ import logging
 
 from typing import Callable, List, Dict, Any
 
-from django.db import models, transaction
+from django.db import connections, models, transaction
 from django.utils import timezone
-
+from django.conf import settings
 
 log = logging.getLogger(__name__)
 
@@ -77,7 +77,26 @@ class JobManager(models.Manager):
 
                 job_kwarg.save()
 
+        self._notify()
         return job
+
+    def _notify(self):
+        conn = connections[self._get_database_alias()]
+
+        with conn.cursor() as cur:
+            cur.execute(f"NOTIFY {self._get_channel_name()}")
+
+    def _get_channel_name(self):
+        try:
+            return settings.DBQUEUE_CHANNEL_NAME
+        except AttributeError:
+            return "dbqueue_notifications"
+
+    def _get_database_alias(self):
+        try:
+            return settings.DBQUEUE_DATABASE_ALIAS
+        except AttributeError:
+            return "default"
 
 
 class Job(models.Model):
