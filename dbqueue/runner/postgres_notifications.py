@@ -30,23 +30,29 @@ class NotificationThread(Thread):
     def run(self):
         log.info("Connecting to database")
         conn = psycopg2.connect(**self._conn_args)
+        conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
         log.info("Connected to database")
 
         log.debug("Getting cursor")
         cur = conn.cursor()
         log.debug("Got cursor")
 
+        log.info("Listening for notifications on %s", self.channel_name)
+
         # TODO: I want to parameterize this, but it seems to throw a syntax error
-        cur.execute(f"LISTEN {self.channel_name};")
+        cur.execute(f"LISTEN {self.channel_name}")
 
         log.debug("Executing listen")
 
         while not self.exiting and not conn.closed:
             log.debug("Beginning select")
 
-            if select.select([conn, self.pipe[0]], [], [], 5) == ([], [], []):
+            if select.select([conn, self.pipe[0]], [], [], 30) == ([], [], []):
                 log.debug("Select timeout")
             else:
+                conn.poll()
+                log.debug("Received notification")
+
                 # Because the notification is just a wake-up for all threads,
                 # we don't care about the individual messages - just unlock the
                 # event after removing all the notifications.
